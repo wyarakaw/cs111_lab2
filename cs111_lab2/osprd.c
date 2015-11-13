@@ -13,6 +13,10 @@
 #include <linux/blkdev.h>
 #include <linux/wait.h>
 #include <linux/file.h>
+#include <linux/slab.h>
+
+#include <unistd.h>
+#include <sys/types.h>
 
 #include "spinlock.h"
 #include "osprd.h"
@@ -31,45 +35,88 @@
  * and KERN_EMERG will make sure that you will see messages.) */
 #define eprintk(format, ...) printk(KERN_NOTICE format, ## __VA_ARGS__)
 
+/*
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("CS 111 RAM Disk");
 // EXERCISE: Pass your names into the kernel as the module's authors.
 MODULE_AUTHOR("Daryn Arakawa and Austin Lazaro");
-
+*/
 #define OSPRD_MAJOR	222
 
 /* This module parameter controls how big the disk will be.
  * You can specify module parameters when you load the module,
- * as an argument to insmod: "insmod osprd.ko nsectors=4096" */o
+ * as an argument to insmod: "insmod osprd.ko nsectors=4096" */
 static int nsectors = 32;
 module_param(nsectors, int, 0);
 
 
+
+
+
+typedef struct pid_node *pid_node_t;
+struct pid_node {
+    pid_t pid;
+    pid_node_t next;
+};
+
+typedef struct pid_t_list *pid_t_list_t;
+struct pid_t_list {
+    pid_node_t head;
+    pid_node_t tail;
+};
+
+pid_t_list_t init_pid_t_list(){
+    //need to malloc; look into kmalloc?
+    pid_t_list_t toBeReturned;
+    toBeReturned->head = NULL;
+    return toBeReturned;
+}
+
+void add_pid_to_list (pid_t pid_to_be_added, pid_t_list_t pid_list){
+    pid_node_t pid_node; //= (*pid_node)malloc(sizeof(struct pid_node));
+    pid_node->pid = pid_to_be_added;
+    
+    if (!pid_list->head){
+        pid_node->next = NULL;
+        pid_list->head = pid_node;
+    } else if (pid_list->head){
+        pid_list->tail->next = pid_node;
+        pid_node->next = NULL;
+        pid_list->tail = pid_node;
+    }
+}
+
 /* The internal representation of our device. */
 typedef struct osprd_info {
     uint8_t *data;                  // The data array. Its size is
-    // (nsectors * SECTOR_SIZE) bytes.
+                                    // (nsectors * SECTOR_SIZE) bytes.
     
     osp_spinlock_t mutex;           // Mutex for synchronizing access to
-    // this block device
+                                    // this block device
     
     unsigned ticket_head;		// Currently running ticket for
-    // the device lock
+                                // the device lock
     
     unsigned ticket_tail;		// Next available ticket for
-    // the device lock
+                                // the device lock
     
     wait_queue_head_t blockq;       // Wait queue for tasks blocked on
-    // the device lock
+                                    // the device lock
     
     /* HINT: You may want to add additional fields to help
      in detecting deadlock. */
+    int num_read_locks;
+    int num_write_locks;
+    
+    pid_t_list_t read_lock;
+    
+    pid_node_t lock_holder_node;
     
     // The following elements are used internally; you don't need
     // to understand them.
     struct request_queue *queue;    // The device request queue.
     spinlock_t qlock;		// Used internally for mutual
-    //   exclusion in the 'queue'.
+                            //   exclusion in the 'queue'.
     struct gendisk *gd;             // The generic disk.
 } osprd_info_t;
 
@@ -160,15 +207,29 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         // a lock, release the lock.  Also wake up blocked processes
         // as appropriate.
         
-        if (filp){
-            osprd_info_t osprd_info = file2osprd(filp);
-            int writable = flip->f_mode & FMODE_WRITE;
-            osp_spin_lock(&d->mutex);
-        }
+        //lets us check if our mutex is locked
+        osp_spin_lock(&d->mutex)
         
-        // This line avoids compiler warnings; you may remove it.
-        (void) filp_writable, (void) d;
         
+        if ((filp->f_flags & F_OSPRD_LOCKED) == 0){
+            osp_spin_unlock(&d->mutex);
+            return 0;
+        } else {
+            if (filp_writable){
+                d->write_locks--;
+            } else {
+                d->read_locks--;
+            }
+            
+            if (d->ticket_head < d->ticket_tail){
+                d->ticket_head++;
+            } else if (d->ticket_head > d->ticket_tail){
+                d->ticket_head = 0;
+            }
+            
+            filp->f_flags &= ~F_OSPRD_LOCKED;
+            wake_up_all(&d->blockq);
+        }
     }
     
     return 0;
@@ -280,7 +341,12 @@ static void osprd_setup(osprd_info_t *d)
     init_waitqueue_head(&d->blockq);
     osp_spin_lock_init(&d->mutex);
     d->ticket_head = d->ticket_tail = 0;
+    
     /* Add code here if you add fields to osprd_info_t. */
+    init_pid_t_list();
+    d->read_locks = 0;
+    d->write_locks = 0;
+    d->read_lock = NULL;
 }
 
 
