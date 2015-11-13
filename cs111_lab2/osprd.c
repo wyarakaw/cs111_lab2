@@ -120,15 +120,14 @@ static void osprd_process_request(osprd_info_t *d, struct request *req)
     // Consider the 'req->sector', 'req->current_nr_sectors', and
     // 'req->buffer' members, and the rq_data_dir() function.
     
-    // Your code here.
-    void *destination = d->data + (req->sector * SECTOR_SIZE);
-    size_t num_bytes = req->current_nr_sectors * SECTOR_SIZE;
-    
+    int num_bytes = req->current_nr_sectors * SECTOR_SIZE;
+    int offset = req->sector * SECTOR_SIZE;
+    void *transfer = d->data + offset;
     
     if (rq_data_dir(req) == READ){
-        memcpy(req->buffer, destination, num_bytes);
+        memcpy(req->buffer, transfer, num_bytes);
     } else if (rq_data_dir(req) == WRITE){
-        memcpy(d->data, destination, num_bytes);
+        memcpy(transfer, req->buffer, num_bytes);
     } else {
         eprintk("Error: Request is not READ or WRITE.");
     }
@@ -161,8 +160,12 @@ static int osprd_close_last(struct inode *inode, struct file *filp)
         // a lock, release the lock.  Also wake up blocked processes
         // as appropriate.
         
-        // Your code here.
-        
+        if (filp){
+            osprd_info_t osprd_info = file2osprd(filp);
+            int writable = flip->f_mode & FMODE_WRITE;
+            osp_spin_lock(&d->mutex);
+        }
+        
         // This line avoids compiler warnings; you may remove it.
         (void) filp_writable, (void) d;
         
@@ -201,7 +204,10 @@ int osprd_ioctl(struct inode *inode, struct file *filp,
         // If *filp is open for writing (filp_writable), then attempt
         // to write-lock the ramdisk; otherwise attempt to read-lock
         // the ramdisk.
-        //
+        if (filp_writable){
+            
+        }
+        
         // This lock request must block using 'd->blockq' until:
         // 1) no other process holds a write lock;
         // 2) either the request is for a read lock, or no other process
